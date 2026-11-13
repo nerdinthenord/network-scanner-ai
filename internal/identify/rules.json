@@ -1,0 +1,196 @@
+[
+  {
+    "id": "ssh-ubuntu",
+    "device": {"type": "computer", "vendor": "Canonical", "product": "Ubuntu Linux host"},
+    "confidence": "high",
+    "note": "Ubuntu's OpenSSH package adds the distribution name to the SSH banner.",
+    "all": [{"service": "ssh", "banner_contains": "Ubuntu"}],
+    "example": [{"port": 22, "service": {"name": "ssh", "banner": "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5"}}]
+  },
+  {
+    "id": "ssh-debian",
+    "device": {"type": "computer", "vendor": "Debian", "product": "Debian Linux host"},
+    "confidence": "high",
+    "note": "Debian's OpenSSH package adds the distribution name to the SSH banner.",
+    "all": [{"service": "ssh", "banner_contains": "Debian"}],
+    "example": [{"port": 22, "service": {"name": "ssh", "banner": "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3"}}]
+  },
+  {
+    "id": "ssh-raspbian",
+    "device": {"type": "computer", "vendor": "Raspberry Pi", "product": "Raspberry Pi running Raspbian"},
+    "confidence": "high",
+    "all": [{"service": "ssh", "banner_contains": "Raspbian"}],
+    "example": [{"port": 22, "service": {"name": "ssh", "banner": "SSH-2.0-OpenSSH_8.4p1 Raspbian-5+deb11u3"}}]
+  },
+  {
+    "id": "ssh-freebsd",
+    "device": {"type": "computer", "vendor": "FreeBSD", "product": "FreeBSD host"},
+    "confidence": "high",
+    "all": [{"service": "ssh", "banner_contains": "FreeBSD"}],
+    "example": [{"port": 22, "service": {"name": "ssh", "banner": "SSH-2.0-OpenSSH_9.3 FreeBSD-20230719"}}]
+  },
+  {
+    "id": "ssh-mikrotik",
+    "device": {"type": "router", "vendor": "MikroTik", "product": "RouterOS device"},
+    "confidence": "high",
+    "note": "RouterOS identifies its SSH server as ROSSSH.",
+    "all": [{"service": "ssh", "banner_contains": "ROSSSH"}],
+    "example": [{"port": 22, "service": {"name": "ssh", "banner": "SSH-2.0-ROSSSH"}}]
+  },
+  {
+    "id": "ssh-dropbear",
+    "device": {"type": "embedded", "product": "Embedded Linux device (Dropbear SSH)"},
+    "confidence": "medium",
+    "note": "Dropbear is the usual SSH server on routers, NAS units and IoT firmware, but it also runs on ordinary hosts.",
+    "all": [{"service": "ssh", "banner_contains": "dropbear"}],
+    "example": [{"port": 22, "service": {"name": "ssh", "banner": "SSH-2.0-dropbear_2022.83"}}]
+  },
+  {
+    "id": "http-mikrotik",
+    "device": {"type": "router", "vendor": "MikroTik", "product": "RouterOS device"},
+    "confidence": "high",
+    "all": [{"http_title_contains": "RouterOS"}],
+    "example": [{"port": 80, "service": {"name": "http", "http": {"status": 200, "title": "RouterOS router configuration page"}}}]
+  },
+  {
+    "id": "http-proxmox",
+    "device": {"type": "hypervisor", "vendor": "Proxmox", "product": "Proxmox Virtual Environment"},
+    "confidence": "high",
+    "all": [{"http_title_contains": "Proxmox Virtual Environment"}],
+    "example": [{"port": 8006, "service": {"name": "https", "http": {"status": 200, "title": "pve - Proxmox Virtual Environment"}}}]
+  },
+  {
+    "id": "http-synology",
+    "device": {"type": "nas", "vendor": "Synology", "product": "Synology NAS"},
+    "confidence": "medium",
+    "note": "Matches the DSM sign-in page title. Titles can be customised.",
+    "all": [{"http_title_contains": "Synology"}],
+    "example": [{"port": 5000, "service": {"name": "http", "http": {"status": 200, "title": "Synology DiskStation"}}}]
+  },
+  {
+    "id": "http-home-assistant",
+    "device": {"type": "home-automation", "product": "Home Assistant"},
+    "confidence": "medium",
+    "all": [{"http_title_contains": "Home Assistant"}],
+    "example": [{"port": 8123, "service": {"name": "http", "http": {"status": 200, "title": "Home Assistant"}}}]
+  },
+  {
+    "id": "http-pihole",
+    "device": {"type": "dns-filter", "product": "Pi-hole"},
+    "confidence": "medium",
+    "all": [{"http_title_contains": "Pi-hole"}],
+    "example": [{"port": 80, "service": {"name": "http", "http": {"status": 200, "title": "Pi-hole - raspberrypi"}}}]
+  },
+  {
+    "id": "http-unifi",
+    "device": {"type": "network-controller", "vendor": "Ubiquiti", "product": "UniFi controller or console"},
+    "confidence": "medium",
+    "all": [{"http_title_contains": "UniFi"}],
+    "example": [{"port": 8443, "service": {"name": "https", "http": {"status": 200, "title": "UniFi Network"}}}]
+  },
+  {
+    "id": "http-hikvision",
+    "device": {"type": "camera", "vendor": "Hikvision", "product": "Hikvision camera or recorder"},
+    "confidence": "medium",
+    "note": "Based on the embedded web server names used by Hikvision firmware. Rebranded devices share them.",
+    "any": [{"http_server_contains": "App-webs"}, {"http_server_contains": "DNVRS-Webs"}],
+    "example": [{"port": 80, "service": {"name": "http", "http": {"status": 200, "server": "App-webs/"}}}]
+  },
+  {
+    "id": "ports-google-cast",
+    "device": {"type": "media", "vendor": "Google", "product": "Google Cast device (Chromecast, Nest speaker or display)"},
+    "confidence": "medium",
+    "note": "Cast devices listen on 8008 (HTTP) and 8009 (Cast protocol). Port evidence only.",
+    "all": [{"port": 8008}, {"port": 8009}],
+    "example": [{"port": 8008, "service": {}}, {"port": 8009, "service": {}}]
+  },
+  {
+    "id": "ports-apple-ios",
+    "device": {"type": "mobile", "vendor": "Apple", "product": "iPhone or iPad"},
+    "confidence": "medium",
+    "note": "Port 62078 is the iOS device-sync service. Port evidence only.",
+    "all": [{"port": 62078}],
+    "example": [{"port": 62078, "service": {}}]
+  },
+  {
+    "id": "ports-apple-airplay",
+    "device": {"type": "media", "vendor": "Apple", "product": "AirPlay receiver (Mac, Apple TV or HomePod)"},
+    "confidence": "low",
+    "note": "AirPlay receivers listen on 7000, usually with 5000 or 7100. Other software also uses these ports.",
+    "all": [{"port": 7000}],
+    "any": [{"port": 5000}, {"port": 7100}],
+    "example": [{"port": 5000, "service": {}}, {"port": 7000, "service": {}}]
+  },
+  {
+    "id": "ports-windows",
+    "device": {"type": "computer", "vendor": "Microsoft", "product": "Windows host"},
+    "confidence": "medium",
+    "note": "RPC endpoint mapper (135) together with SMB (445). Port evidence only.",
+    "all": [{"port": 135}, {"port": 445}],
+    "example": [{"port": 135, "service": {}}, {"port": 445, "service": {}}]
+  },
+  {
+    "id": "ports-rdp",
+    "device": {"type": "computer", "product": "Host with Remote Desktop enabled"},
+    "confidence": "low",
+    "note": "Usually Windows, but xrdp and other servers use the same port.",
+    "all": [{"port": 3389}],
+    "example": [{"port": 3389, "service": {}}]
+  },
+  {
+    "id": "ports-printer",
+    "device": {"type": "printer", "product": "Network printer"},
+    "confidence": "medium",
+    "note": "Raw printing (9100) together with IPP (631) or LPD (515). Port evidence only.",
+    "all": [{"port": 9100}],
+    "any": [{"port": 631}, {"port": 515}],
+    "example": [{"port": 631, "service": {}}, {"port": 9100, "service": {}}]
+  },
+  {
+    "id": "ports-raw-print",
+    "device": {"type": "printer", "product": "Device with a raw print service"},
+    "confidence": "low",
+    "all": [{"port": 9100}],
+    "example": [{"port": 9100, "service": {}}]
+  },
+  {
+    "id": "ports-kubernetes-node",
+    "device": {"type": "server", "product": "Kubernetes control-plane node"},
+    "confidence": "medium",
+    "note": "API server (6443) together with the kubelet (10250). Port evidence only.",
+    "all": [{"port": 6443}, {"port": 10250}],
+    "example": [{"port": 6443, "service": {}}, {"port": 10250, "service": {}}]
+  },
+  {
+    "id": "ports-tuya",
+    "device": {"type": "iot", "vendor": "Tuya", "product": "Tuya-based smart device"},
+    "confidence": "low",
+    "note": "Port 6668 is the Tuya local-control port. Single-port evidence.",
+    "all": [{"port": 6668}],
+    "example": [{"port": 6668, "service": {}}]
+  },
+  {
+    "id": "ports-tplink-kasa",
+    "device": {"type": "iot", "vendor": "TP-Link", "product": "Kasa smart plug or switch"},
+    "confidence": "low",
+    "note": "Port 9999 is the Kasa local-control port. Single-port evidence.",
+    "all": [{"port": 9999}],
+    "example": [{"port": 9999, "service": {}}]
+  },
+  {
+    "id": "ports-plex",
+    "device": {"type": "media-server", "vendor": "Plex", "product": "Plex Media Server"},
+    "confidence": "low",
+    "note": "Port 32400 is the Plex default. Single-port evidence.",
+    "all": [{"port": 32400}],
+    "example": [{"port": 32400, "service": {}}]
+  },
+  {
+    "id": "ports-gateway",
+    "device": {"type": "router", "product": "Router or gateway (generic)"},
+    "confidence": "low",
+    "note": "A DNS service next to a web interface is typical of consumer routers, and of many other things.",
+    "all": [{"port": 53}, {"port": 80}],
+    "example": [{"port": 53, "service": {}}, {"port": 80, "service": {"name": "http"}}]
+  }
+]

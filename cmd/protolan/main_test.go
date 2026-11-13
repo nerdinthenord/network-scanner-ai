@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,7 +36,7 @@ func listenPort(t *testing.T) string {
 
 func TestScanJSONEndToEnd(t *testing.T) {
 	port := listenPort(t)
-	code, stdout, stderr := exec(t, "scan", "-format", "json", "-p", port, "127.0.0.1")
+	code, stdout, stderr := exec(t, "scan", "-no-identify", "-format", "json", "-p", port, "127.0.0.1")
 	if code != exitOK {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
@@ -56,7 +59,7 @@ func TestScanJSONEndToEnd(t *testing.T) {
 func TestScanTextAndOutputFile(t *testing.T) {
 	port := listenPort(t)
 	path := filepath.Join(t.TempDir(), "report.txt")
-	code, stdout, stderr := exec(t, "scan", "-o", path, "-p", port, "127.0.0.1")
+	code, stdout, stderr := exec(t, "scan", "-no-identify", "-o", path, "-p", port, "127.0.0.1")
 	if code != exitOK || stdout != "" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
@@ -87,7 +90,7 @@ func TestScanDryRun(t *testing.T) {
 func TestScanAuditLog(t *testing.T) {
 	port := listenPort(t)
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	if code, _, stderr := exec(t, "scan", "-audit-log", path, "-p", port, "127.0.0.1"); code != exitOK {
+	if code, _, stderr := exec(t, "scan", "-no-identify", "-audit-log", path, "-p", port, "127.0.0.1"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
 	b, err := os.ReadFile(path)
@@ -139,5 +142,62 @@ func TestVersion(t *testing.T) {
 	code, stdout, _ := exec(t, "version")
 	if code != exitOK || !strings.HasPrefix(stdout, "protolan ") {
 		t.Fatalf("exit %d, stdout %q", code, stdout)
+	}
+}
+
+func TestScanIdentifiesServiceAndDevice(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Server", "TestBox/2.0")
+		_, _ = w.Write([]byte("<title>Lab Device Console</title>"))
+	}))
+	defer srv.Close()
+	port := strconv.Itoa(int(netip.MustParseAddrPort(srv.Listener.Addr().String()).Port()))
+
+	rules := filepath.Join(t.TempDir(), "rules.json")
+	rule := `[{"id":"lab-device","device":{"type":"lab","product":"Lab Device"},"confidence":"high",
+		"all":[{"http_title_contains":"lab device"}],
+		"example":[{"port":80,"service":{"http":{"status":200,"title":"Lab Device Console"}}}]}]`
+	if err := os.WriteFile(rules, []byte(rule), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := exec(t, "scan", "-format", "json", "-rules", rules, "-p", port, "127.0.0.1")
+	if code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	var doc report.Document
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatal(err)
+	}
+	h := doc.Hosts[0]
+	svc := h.Ports[0].Service
+	if svc == nil || svc.Name != "http" || svc.HTTP.Server != "TestBox/2.0" || svc.HTTP.Title != "Lab Device Console" {
+		t.Fatalf("service = %+v", svc)
+	}
+	if h.Device == nil || h.Device.Rule != "lab-device" || len(h.Device.Evidence) != 1 || !doc.Parameters.Identify {
+		t.Fatalf("device = %+v", h.Device)
+	}
+
+	// -no-identify must send nothing beyond the connect scan.
+	code, stdout, _ = exec(t, "scan", "-format", "json", "-no-identify", "-p", port, "127.0.0.1")
+	if code != exitOK || strings.Contains(stdout, `"service"`) || strings.Contains(stdout, `"device"`) {
+		t.Fatalf("exit %d, -no-identify output still has identification:\n%s", code, stdout)
+	}
+}
+
+func TestScanRejectsBadRulesFile(t *testing.T) {
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	_ = os.WriteFile(bad, []byte(`[{"id":"x"}]`), 0o600)
+	for _, path := range []string{bad, filepath.Join(t.TempDir(), "absent.json")} {
+		if code, stdout, _ := exec(t, "scan", "-rules", path, "127.0.0.1"); code != exitUsage || stdout != "" {
+			t.Errorf("rules %s: exit %d, stdout %q", path, code, stdout)
+		}
+	}
+}
+
+func TestRulesCommand(t *testing.T) {
+	code, stdout, _ := exec(t, "rules")
+	if code != exitOK || !strings.Contains(stdout, "ssh-ubuntu") || !strings.Contains(stdout, "CONFIDENCE") {
+		t.Fatalf("exit %d:\n%s", code, stdout)
 	}
 }

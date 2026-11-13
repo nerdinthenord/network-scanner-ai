@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/nerdinthenord/protolan/internal/identify"
+	"github.com/nerdinthenord/protolan/internal/probe"
 	"github.com/nerdinthenord/protolan/internal/scan"
 )
 
@@ -46,6 +49,8 @@ type Parameters struct {
 	Concurrency int      `json:"concurrency"`
 	RatePerSec  int      `json:"rate_per_sec"`
 	AllowPublic bool     `json:"allow_public"`
+	// Identify records whether open ports were probed for service details.
+	Identify bool `json:"identify"`
 }
 
 // Summary gives totals for the run.
@@ -64,7 +69,9 @@ type Summary struct {
 // Host is one responsive address.
 type Host struct {
 	Address string `json:"address"`
-	Ports   []Port `json:"ports"`
+	// Device is the identification verdict, absent when no rule matched.
+	Device *identify.Result `json:"device,omitempty"`
+	Ports  []Port           `json:"ports"`
 }
 
 // Port is one probed port.
@@ -73,13 +80,24 @@ type Port struct {
 	Protocol  string  `json:"protocol"`
 	State     string  `json:"state"`
 	LatencyMS float64 `json:"latency_ms"`
+	// Service is what probing learned, absent when nothing was learned.
+	Service *probe.Service `json:"service,omitempty"`
+}
+
+// Options selects what Build includes.
+type Options struct {
+	// AllStates also lists closed and filtered ports on responsive hosts.
+	AllStates bool
+	// Services and Devices carry identification results, keyed by open
+	// port and by host. Either may be nil.
+	Services map[probe.Target]probe.Service
+	Devices  map[netip.Addr]*identify.Result
 }
 
 // Build converts engine results into a Document. Only hosts that answered
-// are listed. Closed and filtered ports are included only when allStates is
-// set; open ports are always included.
+// are listed, and open ports are always included.
 func Build(tool Tool, params Parameters, started, finished time.Time,
-	results []scan.HostResult, stats scan.Stats, allStates bool) Document {
+	results []scan.HostResult, stats scan.Stats, opt Options) Document {
 
 	doc := Document{
 		SchemaVersion: SchemaVersion,
@@ -100,20 +118,24 @@ func Build(tool Tool, params Parameters, started, finished time.Time,
 		if !hr.Up {
 			continue
 		}
-		h := Host{Address: hr.Addr.String(), Ports: []Port{}}
+		h := Host{Address: hr.Addr.String(), Device: opt.Devices[hr.Addr], Ports: []Port{}}
 		for _, pr := range hr.Ports {
 			if pr.State == scan.Open {
 				doc.Summary.OpenPorts++
 			}
-			if pr.State == "" || (pr.State != scan.Open && !allStates) {
+			if pr.State == "" || (pr.State != scan.Open && !opt.AllStates) {
 				continue
 			}
-			h.Ports = append(h.Ports, Port{
+			p := Port{
 				Port:      pr.Port,
 				Protocol:  "tcp",
 				State:     string(pr.State),
 				LatencyMS: float64(pr.Latency.Microseconds()) / 1000,
-			})
+			}
+			if svc, ok := opt.Services[probe.Target{Addr: hr.Addr, Port: pr.Port}]; ok && !svc.IsZero() {
+				p.Service = &svc
+			}
+			h.Ports = append(h.Ports, p)
 		}
 		doc.Summary.HostsUp++
 		doc.Hosts = append(doc.Hosts, h)
@@ -131,20 +153,40 @@ func WriteJSON(w io.Writer, doc Document) error {
 // WriteText renders a human-readable table.
 func WriteText(w io.Writer, doc Document) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOST\tPORT\tSTATE\tLATENCY")
+	fmt.Fprintln(tw, "HOST\tPORT\tSTATE\tSERVICE\tDETAIL")
 	for _, h := range doc.Hosts {
 		if len(h.Ports) == 0 {
-			fmt.Fprintf(tw, "%s\t-\tup (no open ports)\t-\n", h.Address)
+			fmt.Fprintf(tw, "%s\t-\tup (no open ports)\t\t\n", h.Address)
 			continue
 		}
 		for _, p := range h.Ports {
-			fmt.Fprintf(tw, "%s\t%s/%s\t%s\t%s\n", h.Address,
-				strconv.Itoa(int(p.Port)), p.Protocol, p.State,
-				strconv.FormatFloat(p.LatencyMS, 'f', 1, 64)+"ms")
+			name, detail := describe(p.Service)
+			fmt.Fprintf(tw, "%s\t%s/%s\t%s\t%s\t%s\n", h.Address,
+				strconv.Itoa(int(p.Port)), p.Protocol, p.State, name, detail)
 		}
 	}
 	if err := tw.Flush(); err != nil {
 		return err
+	}
+
+	identified := false
+	for _, h := range doc.Hosts {
+		d := h.Device
+		if d == nil {
+			continue
+		}
+		if !identified {
+			fmt.Fprintln(w, "\nDEVICES")
+			identified = true
+		}
+		label := d.Product
+		if label == "" {
+			label = d.Type
+		}
+		fmt.Fprintf(w, "%s  %s  [%s confidence, rule %s]\n", h.Address, label, d.Confidence, d.Rule)
+		for _, e := range d.Evidence {
+			fmt.Fprintf(w, "    - %s\n", e)
+		}
 	}
 
 	s := doc.Summary
@@ -157,4 +199,41 @@ func WriteText(w io.Writer, doc Document) error {
 	}
 	_, err := fmt.Fprintln(w, b.String())
 	return err
+}
+
+// describe summarises a probed service for the text table.
+func describe(s *probe.Service) (name, detail string) {
+	if s == nil {
+		return "", ""
+	}
+	var parts []string
+	if s.Banner != "" {
+		parts = append(parts, s.Banner)
+	}
+	if s.HTTP != nil {
+		if s.HTTP.Server != "" {
+			parts = append(parts, s.HTTP.Server)
+		}
+		if s.HTTP.Title != "" {
+			parts = append(parts, strconv.Quote(s.HTTP.Title))
+		}
+	}
+	if s.TLS != nil {
+		cert := s.TLS.Version
+		if s.TLS.Subject != "" {
+			cert += " cert " + s.TLS.Subject
+		}
+		if !s.TLS.NotAfter.IsZero() {
+			cert += " expires " + s.TLS.NotAfter.Format("2006-01-02")
+		}
+		if s.TLS.Expired {
+			cert += " (EXPIRED)"
+		}
+		parts = append(parts, cert)
+	}
+	detail = strings.Join(parts, " | ")
+	if len(detail) > 90 {
+		detail = detail[:87] + "..."
+	}
+	return s.Name, detail
 }
