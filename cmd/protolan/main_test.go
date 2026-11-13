@@ -201,3 +201,42 @@ func TestRulesCommand(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, stdout)
 	}
 }
+
+func TestHistoryAndDiff(t *testing.T) {
+	dir := t.TempDir()
+	p1 := listenPort(t)
+	scan := func(ports string, extra ...string) (int, string) {
+		args := append([]string{"scan", "-no-identify", "-history", dir, "-p", ports}, extra...)
+		code, _, stderr := exec(t, append(args, "127.0.0.1")...)
+		return code, stderr
+	}
+	if code, msg := scan(p1); code != exitOK || !strings.Contains(msg, "first scan saved") {
+		t.Fatalf("first: exit %d, %q", code, msg)
+	}
+	if code, msg := scan(p1, "-fail-on-drift"); code != exitOK || !strings.Contains(msg, "no drift") {
+		t.Fatalf("second: exit %d, %q", code, msg)
+	}
+	p2 := listenPort(t)
+	code, msg := scan(p1+","+p2, "-fail-on-drift")
+	if code != exitDrift || !strings.Contains(msg, "port_opened") || !strings.Contains(msg, p2+"/tcp") {
+		t.Fatalf("third: exit %d, %q", code, msg)
+	}
+
+	files, _ := filepath.Glob(filepath.Join(dir, "scan-*.json"))
+	if len(files) != 3 {
+		t.Fatalf("history has %d files, want 3", len(files))
+	}
+	if code, out, _ := exec(t, "diff", files[0], files[1]); code != exitOK || !strings.Contains(out, "no drift") {
+		t.Fatalf("diff equal: exit %d, %q", code, out)
+	}
+	code, out, _ := exec(t, "diff", "-format", "json", files[1], files[2])
+	if code != exitDrift || !strings.Contains(out, `"kind": "port_opened"`) {
+		t.Fatalf("diff changed: exit %d, %q", code, out)
+	}
+	if code, _, _ := exec(t, "diff", files[0]); code != exitUsage {
+		t.Fatalf("diff with one file: exit %d", code)
+	}
+	if code, _, _ := exec(t, "diff", files[0], filepath.Join(dir, "absent.json")); code != exitError {
+		t.Fatalf("diff with missing file: exit %d", code)
+	}
+}
