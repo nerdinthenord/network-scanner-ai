@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -209,5 +211,46 @@ func TestRunCountsLocalErrors(t *testing.T) {
 	}
 	if res[0].Up || res[0].Ports[0].State != Filtered {
 		t.Fatalf("got %+v", res[0])
+	}
+}
+
+func TestRunCancelDuringDialIsInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	d := &fakeDialer{fn: func(dialCtx context.Context, _ string) error {
+		cancel() // every job is already dispatched; cancel mid-connection
+		<-dialCtx.Done()
+		return dialCtx.Err()
+	}}
+	res, stats := Run(ctx, loopback, []uint16{80}, Config{Timeout: 5 * time.Second, Dialer: d})
+
+	if !stats.Interrupted || stats.ProbesSent != 0 {
+		t.Fatalf("stats = %+v; a probe cancelled mid-dial must count as interrupted", stats)
+	}
+	if res[0].Ports[0].State != "" || res[0].Up {
+		t.Fatalf("cancelled probe must stay unprobed, got %+v", res[0])
+	}
+}
+
+func TestRunSpacesStartsWhenWorkersAreBusy(t *testing.T) {
+	const interval = 20 * time.Millisecond // rate 50/s
+	var mu sync.Mutex
+	var starts []time.Time
+	d := &fakeDialer{fn: func(context.Context, string) error {
+		mu.Lock()
+		starts = append(starts, time.Now())
+		first := len(starts) == 1
+		mu.Unlock()
+		if first {
+			time.Sleep(5 * interval) // hold the only worker well past several slots
+		}
+		return nil
+	}}
+	Run(context.Background(), loopback, []uint16{1, 2, 3, 4, 5}, Config{Concurrency: 1, Rate: 50, Dialer: d})
+
+	slices.SortFunc(starts, func(a, b time.Time) int { return a.Compare(b) })
+	for i := 1; i < len(starts); i++ {
+		if gap := starts[i].Sub(starts[i-1]); gap < interval/2 {
+			t.Fatalf("probes %d and %d started %s apart; want about %s (burst after a slow probe)", i, i+1, gap, interval)
+		}
 	}
 }

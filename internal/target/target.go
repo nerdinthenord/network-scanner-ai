@@ -8,7 +8,6 @@ package target
 import (
 	"errors"
 	"fmt"
-	"math/big"
 	"net/netip"
 	"strings"
 )
@@ -57,16 +56,19 @@ func Expand(specs []string, opt Options) ([]netip.Addr, error) {
 		if err != nil {
 			return nil, err
 		}
-		n := span(first, last)
-		if !n.IsInt64() || n.Int64() > int64(limit-len(out)) {
-			return nil, fmt.Errorf("%w: %q would exceed the limit of %d (raise it with --max-hosts)",
-				ErrTooManyHosts, spec, limit)
-		}
+		// Only addresses not seen before count against the limit, so
+		// overlapping specs are not charged twice. The walk stays bounded:
+		// it stops at the first new address past the limit, and duplicates
+		// can number at most the addresses already accepted.
 		for a := first; ; a = a.Next() {
-			if err := checkScope(a, opt.AllowPublic); err != nil {
-				return nil, fmt.Errorf("%q: %w", spec, err)
-			}
 			if _, dup := seen[a]; !dup {
+				if len(out) >= limit {
+					return nil, fmt.Errorf("%w: %q would exceed the limit of %d (raise it with --max-hosts)",
+						ErrTooManyHosts, spec, limit)
+				}
+				if err := checkScope(a, opt.AllowPublic); err != nil {
+					return nil, fmt.Errorf("%q: %w", spec, err)
+				}
 				seen[a] = struct{}{}
 				out = append(out, a)
 			}
@@ -138,13 +140,6 @@ func lastAddr(p netip.Prefix) netip.Addr {
 	}
 	a, _ := netip.AddrFromSlice(b)
 	return a
-}
-
-// span returns how many addresses lie in [first, last].
-func span(first, last netip.Addr) *big.Int {
-	lo := new(big.Int).SetBytes(first.AsSlice())
-	hi := new(big.Int).SetBytes(last.AsSlice())
-	return hi.Sub(hi, lo).Add(hi, big.NewInt(1))
 }
 
 func checkScope(a netip.Addr, allowPublic bool) error {

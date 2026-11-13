@@ -101,3 +101,27 @@ func TestExpandAtLimit(t *testing.T) {
 		t.Fatalf("got %d addrs, err %v; want 6", len(got), err)
 	}
 }
+
+func TestExpandLimitCountsUniqueAddresses(t *testing.T) {
+	tests := []struct {
+		name  string
+		specs []string
+		max   int
+		want  int
+	}{
+		{"repeated host", []string{"10.0.0.1", "10.0.0.1"}, 1, 1},
+		{"host then subnet that fills the limit", []string{"10.0.0.1", "10.0.0.0/30"}, 2, 2},
+		{"overlapping ranges", []string{"10.0.0.1-10.0.0.4", "10.0.0.3-10.0.0.6"}, 6, 6},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Expand(tc.specs, Options{MaxHosts: tc.max})
+			if err != nil || len(got) != tc.want {
+				t.Fatalf("got %d addrs, err %v; want %d", len(got), err, tc.want)
+			}
+		})
+	}
+	if _, err := Expand([]string{"10.0.0.1-10.0.0.4", "10.0.0.3-10.0.0.6"}, Options{MaxHosts: 5}); !errors.Is(err, ErrTooManyHosts) {
+		t.Fatalf("six unique hosts with a limit of five: err = %v", err)
+	}
+}

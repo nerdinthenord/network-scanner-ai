@@ -75,7 +75,8 @@ type HostResult struct {
 // Stats summarises a run.
 type Stats struct {
 	ProbesPlanned int
-	ProbesSent    int
+	// ProbesSent counts probes that ran to a conclusion.
+	ProbesSent int
 	// Interrupted is true when the context ended before every probe ran.
 	// Ports that were never probed have an empty State.
 	Interrupted bool
@@ -129,10 +130,19 @@ func Run(ctx context.Context, targets []netip.Addr, ports []uint16, cfg Config) 
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
+				// Take the rate-limit slot here, when this worker is ready
+				// to connect, so connection starts are evenly spaced even
+				// after every worker has been busy.
+				if lim.wait(ctx) != nil {
+					continue // cancelled: drain without probing
+				}
 				// Each (host, port) slot is written by exactly one worker.
 				r := &results[j.host].Ports[j.port]
-				var localErr error
-				r.State, r.Latency, localErr = probe(ctx, cfg, targets[j.host], r.Port)
+				state, latency, localErr, ok := probe(ctx, cfg, targets[j.host], r.Port)
+				if !ok {
+					continue // cancelled mid-connection: leave unprobed
+				}
+				r.State, r.Latency = state, latency
 				mu.Lock()
 				stats.ProbesSent++
 				if localErr != nil {
@@ -151,9 +161,6 @@ func Run(ctx context.Context, targets []netip.Addr, ports []uint16, cfg Config) 
 dispatch:
 	for p := range ports {
 		for h := range targets {
-			if lim.wait(ctx) != nil {
-				break dispatch
-			}
 			select {
 			case jobs <- job{host: h, port: p}:
 			case <-ctx.Done():
@@ -164,7 +171,9 @@ dispatch:
 	close(jobs)
 	wg.Wait()
 
-	stats.Interrupted = ctx.Err() != nil && stats.ProbesSent < stats.ProbesPlanned
+	// Every job is dispatched and completed unless the context ended first,
+	// whether before dispatch, while waiting for a rate slot, or mid-dial.
+	stats.Interrupted = stats.ProbesSent < stats.ProbesPlanned
 	for i := range results {
 		for _, pr := range results[i].Ports {
 			if pr.State == Open || pr.State == Closed {
@@ -176,26 +185,31 @@ dispatch:
 	return results, stats
 }
 
-// probe attempts one connection. localErr is non-nil when the attempt failed
-// for a reason on this machine, in which case the state says nothing about
-// the target.
-func probe(ctx context.Context, cfg Config, addr netip.Addr, port uint16) (state State, latency time.Duration, localErr error) {
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+// probe attempts one connection. ok is false when the run was cancelled
+// before the attempt reached a conclusion. localErr is non-nil when the
+// attempt failed for a reason on this machine, in which case the state says
+// nothing about the target.
+func probe(ctx context.Context, cfg Config, addr netip.Addr, port uint16) (state State, latency time.Duration, localErr error, ok bool) {
+	dialCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
 	start := time.Now()
-	conn, err := cfg.Dialer.DialContext(ctx, "tcp", net.JoinHostPort(addr.String(), strconv.Itoa(int(port))))
+	conn, err := cfg.Dialer.DialContext(dialCtx, "tcp", net.JoinHostPort(addr.String(), strconv.Itoa(int(port))))
 	elapsed := time.Since(start)
 	switch {
 	case err == nil:
 		_ = conn.Close()
-		return Open, elapsed, nil
+		return Open, elapsed, nil, true
 	case errors.Is(err, syscall.ECONNREFUSED):
-		return Closed, elapsed, nil
+		return Closed, elapsed, nil, true
+	case ctx.Err() != nil:
+		// The run was cancelled, so this failure is not evidence about
+		// the port.
+		return "", 0, nil, false
 	case isLocal(err):
-		return Filtered, elapsed, err
+		return Filtered, elapsed, err, true
 	default:
-		return Filtered, elapsed, nil
+		return Filtered, elapsed, nil, true
 	}
 }
 
