@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,11 +11,14 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/nerdinthenord/protolan/internal/audit"
+	"github.com/nerdinthenord/protolan/internal/drift"
 	"github.com/nerdinthenord/protolan/internal/identify"
 	"github.com/nerdinthenord/protolan/internal/ports"
 	"github.com/nerdinthenord/protolan/internal/probe"
@@ -24,13 +28,14 @@ import (
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
-var version = "0.1.0-dev"
+var version = "0.3.0-dev"
 
 // Exit codes. They are part of the CLI contract.
 const (
 	exitOK          = 0
 	exitError       = 1
 	exitUsage       = 2
+	exitDrift       = 3
 	exitInterrupted = 130
 )
 
@@ -38,6 +43,7 @@ const usage = `protolan - lightweight network exposure scanner
 
 Usage:
   protolan scan [flags] <target>...
+  protolan diff [-format text|json] <old.json> <new.json>
   protolan rules
   protolan version
 
@@ -62,6 +68,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "scan":
 		return runScan(ctx, args[1:], stdout, stderr)
+	case "diff":
+		return runDiff(args[1:], stdout, stderr)
 	case "rules":
 		return runRules(stdout, stderr)
 	case "version", "--version", "-v":
@@ -90,6 +98,8 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		outPath     = fs.String("output", "", "write the report to this file instead of stdout")
 		allStates   = fs.Bool("all-states", false, "also report closed and filtered ports on responsive hosts")
 		dryRun      = fs.Bool("dry-run", false, "validate targets and print the plan without sending anything")
+		historyDir  = fs.String("history", "", "save each scan as JSON in this directory and report drift from the previous one")
+		failOnDrift = fs.Bool("fail-on-drift", false, "with -history, exit 3 when the scan differs from the previous one")
 		noIdentify  = fs.Bool("no-identify", false, "do not probe open ports for service details or identify devices")
 		rulesPath   = fs.String("rules", "", "JSON file of additional identification rules")
 		auditPath   = fs.String("audit-log", os.Getenv("PROTOLAN_AUDIT_LOG"), "append a JSON audit record per scan to this file (env PROTOLAN_AUDIT_LOG)")
@@ -206,12 +216,87 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(exitError, err)
 	}
+	drifted := false
+	if *historyDir != "" {
+		if drifted, err = recordHistory(*historyDir, doc, stderr); err != nil {
+			return fail(exitError, err)
+		}
+	}
 	if stats.LocalErrors > 0 {
 		fmt.Fprintf(stderr, "protolan: warning: %d probes failed on this machine (first: %s); results are incomplete, try a lower -concurrency\n",
 			stats.LocalErrors, stats.FirstLocalError)
 	}
 	if stats.Interrupted {
 		return exitInterrupted
+	}
+	if drifted && *failOnDrift {
+		return exitDrift
+	}
+	return exitOK
+}
+
+// recordHistory saves doc in dir and, when an earlier scan exists there,
+// writes the drift from it to w. It reports whether anything changed.
+func recordHistory(dir string, doc report.Document, w io.Writer) (bool, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return false, err
+	}
+	earlier, _ := filepath.Glob(filepath.Join(dir, "scan-*.json"))
+	sort.Strings(earlier)
+
+	name := "scan-" + doc.StartedAt.Format("20060102T150405.000000000Z") + ".json"
+	if err := writeFile(filepath.Join(dir, name), func(f io.Writer) error { return report.WriteJSON(f, doc) }); err != nil {
+		return false, err
+	}
+	if len(earlier) == 0 {
+		fmt.Fprintln(w, "protolan: first scan saved to history; nothing to compare yet")
+		return false, nil
+	}
+	prev, err := report.Read(earlier[len(earlier)-1])
+	if err != nil {
+		return false, err
+	}
+	d := drift.Compare(prev, doc)
+	fmt.Fprintf(w, "drift since %s:\n", prev.StartedAt.Format(time.RFC3339))
+	return len(d.Changes) > 0, drift.WriteText(w, d)
+}
+
+func runDiff(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("protolan diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	format := fs.String("format", "text", `output format: "text" or "json"`)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
+		return exitUsage
+	}
+	if fs.NArg() != 2 || (*format != "text" && *format != "json") {
+		fmt.Fprintln(stderr, "usage: protolan diff [-format text|json] <old.json> <new.json>")
+		return exitUsage
+	}
+	var docs [2]report.Document
+	for i, path := range fs.Args() {
+		var err error
+		if docs[i], err = report.Read(path); err != nil {
+			fmt.Fprintln(stderr, "protolan:", err)
+			return exitError
+		}
+	}
+	d := drift.Compare(docs[0], docs[1])
+	var err error
+	if *format == "json" {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		err = enc.Encode(d)
+	} else {
+		err = drift.WriteText(stdout, d)
+	}
+	if err != nil {
+		return exitError
+	}
+	if len(d.Changes) > 0 {
+		return exitDrift
 	}
 	return exitOK
 }

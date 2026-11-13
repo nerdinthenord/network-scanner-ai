@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -236,4 +237,20 @@ func describe(s *probe.Service) (name, detail string) {
 		detail = detail[:87] + "..."
 	}
 	return s.Name, detail
+}
+
+// Read loads a JSON report written by WriteJSON.
+func Read(path string) (Document, error) {
+	var doc Document
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return doc, err
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return doc, fmt.Errorf("%s: not a Protolan report: %w", path, err)
+	}
+	if doc.SchemaVersion != SchemaVersion {
+		return doc, fmt.Errorf("%s: unsupported schema_version %q", path, doc.SchemaVersion)
+	}
+	return doc, nil
 }

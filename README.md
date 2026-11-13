@@ -3,10 +3,11 @@
 Protolan is a lightweight network exposure scanner written in Go. It ships as
 one static binary, needs no root privileges, and has no runtime dependencies.
 
-It is early. Version 0.2 finds responsive hosts and open TCP ports, works out
+It is early. Version 0.3 finds responsive hosts and open TCP ports, works out
 what service is on each port, and gives a device verdict with the evidence
-behind it. Drift detection and policy checks are planned and are listed under
-[Roadmap](#roadmap); they do not exist yet.
+behind it. It can also keep a history of scans and report what changed.
+Policy checks are planned and are listed under [Roadmap](#roadmap); they do
+not exist yet.
 
 > Only scan networks you own or are authorized in writing to test.
 > Unauthorized scanning may be illegal where you live.
@@ -25,6 +26,12 @@ behind it. Drift detection and policy checks are planned and are listed under
   and fingerprint, including for self-signed and expired certificates
 - Applies declarative rules to name the device, and prints the evidence
   for every verdict so you can judge it yourself
+
+**Drift**
+- `-history DIR` saves every scan and reports changes since the previous one
+- `protolan diff old.json new.json` compares any two JSON reports
+- Detects new and vanished hosts, opened and closed ports, and changed
+  services, certificates and device verdicts
 
 **Safeguards**
 - Refuses public addresses unless you pass `--allow-public`
@@ -45,6 +52,24 @@ behind it. Drift detection and policy checks are planned and are listed under
   and is reported as not up.
 
 Protolan does not use, wrap or bundle Nmap or its data files.
+
+## Drift
+
+```sh
+# Run on a schedule. Exits 3 when something changed since the last run.
+protolan scan -history ~/protolan-history -fail-on-drift 192.168.1.0/24
+
+# Compare two saved reports
+protolan diff scan-monday.json scan-friday.json
+```
+
+History is a directory of plain JSON reports, one per scan, readable only by
+you. There is no database. Drift is written to stderr so it does not mix
+with the report.
+
+A host or port missing from the newer scan may only have been switched off.
+Protolan warns when two scans covered different targets or ports, or when
+one was interrupted, because those differences are not network changes.
 
 ## How identification works, and its limits
 
@@ -140,6 +165,8 @@ protolan scan -rate 50 -audit-log ~/protolan-audit.jsonl 192.168.1.0/24
 | `-dry-run` | off | Validate and print the plan only |
 | `-no-identify` | off | Skip service probing and device identification |
 | `-rules` | none | JSON file of additional identification rules |
+| `-history` | none | Directory to save scans in and compare against |
+| `-fail-on-drift` | off | With `-history`, exit 3 when the scan differs from the previous one |
 | `-audit-log` | off | Audit file, also settable with `PROTOLAN_AUDIT_LOG` |
 
 ### Port states
@@ -157,6 +184,7 @@ protolan scan -rate 50 -audit-log ~/protolan-audit.jsonl 192.168.1.0/24
 | 0 | Scan completed |
 | 1 | Runtime error, for example an unwritable output file |
 | 2 | Usage error, including an out-of-scope target |
+| 3 | Drift found (`diff`, or `scan -fail-on-drift`) |
 | 130 | Interrupted; the partial report is still written |
 
 ### JSON output
@@ -167,7 +195,7 @@ are added but never renamed or removed.
 ```json
 {
   "schema_version": "1",
-  "tool": { "name": "protolan", "version": "0.2.0" },
+  "tool": { "name": "protolan", "version": "0.3.0" },
   "started_at": "2026-11-13T00:10:00Z",
   "finished_at": "2026-11-13T00:10:41Z",
   "parameters": {
@@ -239,7 +267,6 @@ Plans, not promises. Nothing below is implemented.
 
 | Version | Scope |
 |---|---|
-| 0.3 | Inventory and drift: store scans locally and report new hosts, vanished hosts and newly opened ports. |
 | 0.4 | Policy as code: declare what each segment may expose and fail when reality differs. Exceptions with an owner, a reason and an expiry date. |
 | 0.5 | Reconciliation against a declared inventory, to surface undeclared devices. |
 | Later | mDNS and SSDP discovery, MAC-vendor lookup, a validated rule set with published accuracy, API, scheduling, multiple sensors, signed releases with an SBOM. |
