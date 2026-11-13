@@ -7,13 +7,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/nerdinthenord/protolan/internal/audit"
+	"github.com/nerdinthenord/protolan/internal/identify"
 	"github.com/nerdinthenord/protolan/internal/ports"
+	"github.com/nerdinthenord/protolan/internal/probe"
 	"github.com/nerdinthenord/protolan/internal/report"
 	"github.com/nerdinthenord/protolan/internal/scan"
 	"github.com/nerdinthenord/protolan/internal/target"
@@ -34,6 +38,7 @@ const usage = `protolan - lightweight network exposure scanner
 
 Usage:
   protolan scan [flags] <target>...
+  protolan rules
   protolan version
 
 Targets are IP addresses, CIDR prefixes (192.168.1.0/24) or ranges
@@ -57,6 +62,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "scan":
 		return runScan(ctx, args[1:], stdout, stderr)
+	case "rules":
+		return runRules(stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, "protolan", version)
 		return exitOK
@@ -83,6 +90,8 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		outPath     = fs.String("output", "", "write the report to this file instead of stdout")
 		allStates   = fs.Bool("all-states", false, "also report closed and filtered ports on responsive hosts")
 		dryRun      = fs.Bool("dry-run", false, "validate targets and print the plan without sending anything")
+		noIdentify  = fs.Bool("no-identify", false, "do not probe open ports for service details or identify devices")
+		rulesPath   = fs.String("rules", "", "JSON file of additional identification rules")
 		auditPath   = fs.String("audit-log", os.Getenv("PROTOLAN_AUDIT_LOG"), "append a JSON audit record per scan to this file (env PROTOLAN_AUDIT_LOG)")
 	)
 	fs.StringVar(portSpec, "p", "common", "shorthand for -ports")
@@ -113,6 +122,13 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	portList, err := ports.Parse(*portSpec)
 	if err != nil {
 		return fail(exitUsage, err)
+	}
+
+	var rules []identify.Rule
+	if !*noIdentify {
+		if rules, err = loadRules(*rulesPath); err != nil {
+			return fail(exitUsage, err)
+		}
 	}
 
 	planned := len(addrs) * len(portList)
@@ -149,6 +165,11 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		Concurrency: *concurrency,
 		Rate:        *rate,
 	})
+
+	opt := report.Options{AllStates: *allStates}
+	if !*noIdentify && !stats.Interrupted {
+		opt.Services, opt.Devices = identifyHosts(ctx, results, rules, probe.Config{UserAgent: "protolan/" + version})
+	}
 	finished := time.Now()
 
 	if *auditPath != "" {
@@ -169,8 +190,9 @@ func runScan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			Concurrency: *concurrency,
 			RatePerSec:  *rate,
 			AllowPublic: *allowPublic,
+			Identify:    !*noIdentify,
 		},
-		started, finished, results, stats, *allStates)
+		started, finished, results, stats, opt)
 
 	render := report.WriteText
 	if *format == "json" {
@@ -206,4 +228,70 @@ func writeFile(path string, write func(io.Writer) error) error {
 		return err
 	}
 	return f.Close()
+}
+
+// loadRules returns the built-in rules plus any from an operator file.
+func loadRules(path string) ([]identify.Rule, error) {
+	rules, err := identify.Builtin()
+	if err != nil || path == "" {
+		return rules, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	extra, err := identify.Load(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return identify.Merge(rules, extra)
+}
+
+// identifyHosts probes every open port, then applies the rules per host.
+func identifyHosts(ctx context.Context, results []scan.HostResult, rules []identify.Rule,
+	cfg probe.Config) (map[probe.Target]probe.Service, map[netip.Addr]*identify.Result) {
+
+	var targets []probe.Target
+	for _, hr := range results {
+		for _, pr := range hr.Ports {
+			if pr.State == scan.Open {
+				targets = append(targets, probe.Target{Addr: hr.Addr, Port: pr.Port})
+			}
+		}
+	}
+	services := probe.All(ctx, targets, cfg)
+
+	devices := make(map[netip.Addr]*identify.Result)
+	for _, hr := range results {
+		var facts []identify.PortFact
+		for _, pr := range hr.Ports {
+			if pr.State == scan.Open {
+				facts = append(facts, identify.PortFact{
+					Port:    pr.Port,
+					Service: services[probe.Target{Addr: hr.Addr, Port: pr.Port}],
+				})
+			}
+		}
+		if res := identify.Identify(facts, rules); res != nil {
+			devices[hr.Addr] = res
+		}
+	}
+	return services, devices
+}
+
+func runRules(stdout, stderr io.Writer) int {
+	rules, err := identify.Builtin()
+	if err != nil {
+		fmt.Fprintln(stderr, "protolan:", err)
+		return exitError
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "RULE\tCONFIDENCE\tTYPE\tPRODUCT")
+	for _, r := range rules {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.ID, r.Confidence, r.Device.Type, r.Device.Product)
+	}
+	if err := tw.Flush(); err != nil {
+		return exitError
+	}
+	return exitOK
 }

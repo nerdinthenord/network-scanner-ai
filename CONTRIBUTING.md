@@ -13,6 +13,13 @@ an issue to discuss anything larger than a small fix before writing code.
   or audit behaviour without discussion.
 - **Tests required.** Tests must not send traffic off the local machine.
 
+## Identification rules
+
+New rules go in `internal/identify/rules.json`. Each needs an `example` that
+it matches, a confidence level that reflects how strong the evidence really
+is, and a `note` when the reasoning is not obvious. Say in the pull request
+what real device you observed the evidence on.
+
 ## Before opening a pull request
 
 ```sh
